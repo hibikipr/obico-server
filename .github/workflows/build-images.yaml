@@ -151,3 +151,39 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # A successful build here only proves pip install and the file layout
+      # are valid - lib/detection_model.py (see its own source) tries three
+      # inference backends in order (darknet, ONNX, RKNN) and silently
+      # swallows an ImportError from each one it can't load, only
+      # surfacing a real failure the first time something actually calls
+      # load_net() and every backend in the priority list has failed. A
+      # build that "succeeds" can still ship an image whose gunicorn
+      # worker never serves a real detection - upstream flagged this
+      # exact risk when closing our PR to their build-images.yaml
+      # (github.com/TheSpaghettiDetective/obico-server/pull/1159), and
+      # it's the reason their own equivalent workflow (master, 9c38b3be)
+      # has a runtime check, not just a build-success one.
+      #
+      # Runs the exact call server.py makes at real startup, on both
+      # platforms just pushed - by digest, not a tag, so this is
+      # unambiguously the image this job just built, not whatever :latest
+      # happened to already point at.
+      - name: Verify inference actually loads (not just that the image boots)
+        if: matrix.name == 'ml-api-cpu'
+        run: |
+          CHECK='
+          import sys
+          from os import path
+          sys.path.insert(0, "/app")
+          from lib.detection_model import load_net
+          net = load_net(path.join("/app/model", "model.cfg"), path.join("/app/model", "model.meta"))
+          assert net is not None, "load_net() returned None"
+          print("load_net OK:", type(net).__name__)
+          '
+          IMAGE="${{ needs.version.outputs.ns }}/obico-ml-api-cpu@${{ steps.build.outputs.digest }}"
+          for platform in linux/amd64 linux/arm64; do
+            echo "::group::Verifying inference on ${platform}"
+            docker run --rm --platform "${platform}" --entrypoint python3 "${IMAGE}" -c "${CHECK}"
+            echo "::endgroup::"
+          done
