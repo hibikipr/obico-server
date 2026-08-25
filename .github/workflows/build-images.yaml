@@ -186,4 +186,14 @@ jobs:
             echo "::group::Verifying inference on ${platform}"
             docker run --rm --platform "${platform}" --entrypoint python3 "${IMAGE}" -c "${CHECK}"
             echo "::endgroup::"
+            # Found in production: without this, the next platform's pull
+            # of the SAME digest reference fails outright - "docker:
+            # cannot overwrite digest ..." - because the local image store
+            # already has that exact digest string claimed by the
+            # previous platform's actual (different) image content.
+            # Digests are meant to be content-addressed, so two different
+            # real images can't both live under the one reference locally
+            # at once; drop it between iterations instead of trying to
+            # keep both around.
+            docker rmi "${IMAGE}" >/dev/null 2>&1 || true
           done
